@@ -1,0 +1,274 @@
+<?php
+
+function multiple_option_sets_form_alter(&$form, &$form_state, $form_id) {
+   if ((strpos($form_id, 'commerce_cart_add_to_cart_form_') > -1)) {
+    multiple_option_sets_add_more_form($form, $form_state, $form_id);
+    $form['#submit'][] = 'multiple_option_sets_add_more_submit';
+   }
+
+}
+
+function multiple_option_sets_add_more_form(&$form, &$form_state, $form_id) {
+
+  $form['field_extra_attributes']['#prefix'] = '<div id="ajax-attributes-wrapper">';
+  $form['field_extra_attributes']['#suffix']= '</div>';
+
+
+  // Build the fieldset with the proper number of names. We'll use
+  // $form_state['num_names'] to determine the number of textfields to build.
+  if (empty($form_state['num_names'])) {
+    $form_state['num_names'] = 0;
+  }
+
+  for ($i = 0; $i < $form_state['num_names']; $i++) {
+
+  //lets add all the fields we want in the set
+  // Because we have many fields with the same values, we have to set
+  // #tree to be able to access them.
+  $form['#tree'] = TRUE;
+
+
+  // Get the current product. Is added in the cart module.
+  if (isset($form_state['default_product'])) {
+    $product_id = $form_state['default_product']->product_id;
+  }
+  elseif (isset($form_state['default_product_id'])) {
+    $product_id = $form_state['default_product_id'];
+  }
+  elseif (isset($form_state['products'])) {
+    $current_product = reset($form_state['products']);
+    $product_id = $current_product->product_id;
+  }
+  else {
+    return;
+  }
+
+  $current_product = commerce_product_load($product_id);
+
+  $someFieldIsAdded = FALSE;
+
+  // Iterates the fields of this product. We search for entity reference fields
+  // to a commerce option set.
+  foreach ($current_product as $field_name => $field) {
+    $field_info = field_info_field($field_name);
+
+    if ($field_info['type'] != 'entityreference' || !isset($field_info['settings']['target_type']) || $field_info['settings']['target_type'] != 'commerce_option_set') {
+      continue;
+    }
+
+    // Do not display our options if this field has been marked as an attribute field.
+    $field_instance_info = field_info_instance('commerce_product', $field_name, $current_product->type);
+    if ($field_instance_info['commerce_cart_settings']['attribute_field']) {
+      return;
+    }
+
+    $lang_code = field_language('commerce_product', $current_product, $field_name);
+    if (!isset($field[$lang_code])) {
+      continue;
+    }
+
+    // Create a new blank option set.
+
+    foreach($field[$lang_code] as $key => $data) {
+
+      $option_set = commerce_option_set_load($data['target_id']);
+
+      $values = array(
+        'set_id' => $option_set->set_id,
+      );
+
+      $option = commerce_option_new($values);
+
+      $form_state['commerce_option'][$field_name][$key+1+$i]['option'] = $option;
+
+      $form[$field_name][$key+1+$i] = array(
+        '#parents' => array($field_name, $key+1+$i),
+      );
+
+      field_attach_form('commerce_option', $option, $form[$field_name][$key+1+$i], $form_state);
+      $someFieldIsAdded = TRUE;
+
+    }
+  }
+
+    $form['field_extra_attributes'][$i+1]['quantity'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Quantity'),
+      '#prefix' => '<div class="col2">',
+      '#suffix' => '</div>'
+    );
+
+  }
+
+  $form['actions']['add_more'] = array(
+    '#type' => 'submit',
+    '#value' => t('Add more'),
+    '#weight' => 50,
+    '#submit' => array('multiple_option_sets_add_more_add_one'),
+    '#ajax' => array(
+      'callback' => 'multiple_option_sets_add_more_callback',
+      'wrapper' => 'ajax-attributes-wrapper',
+    ),
+  );
+
+  return $form;
+
+}
+
+/**
+ * Callback for both ajax-enabled buttons.
+ *
+ * Selects and returns the fieldset with the names in it.
+ */
+function multiple_option_sets_add_more_callback($form, $form_state) {
+  return $form['field_extra_attributes'];
+}
+
+/**
+ * Submit handler for the "add-one-more" button.
+ *
+ * Increments the max counter and causes a rebuild.
+ */
+function multiple_option_sets_add_more_add_one($form, &$form_state) {
+  $form_state['num_names']++;
+  $form_state['rebuild'] = TRUE;
+}
+
+/**
+ * Submit handler for the "remove one" button.
+ *
+ * Decrements the max counter and causes a form rebuild.
+ */
+function multiple_option_sets_add_more_remove_one($form, &$form_state) {
+  if ($form_state['num_names'] > 1) {
+    $form_state['num_names']--;
+  }
+  $form_state['rebuild'] = TRUE;
+}
+
+
+function multiple_option_sets_commerce_cart_product_comparison_properties_alter(&$comparison_properties) {
+  // Force separate line items when the same product is added to the cart from
+  // different display paths.
+  $comparison_properties[] = 'field_color';
+}
+
+/**
+ * Cart submit callback function. This is required to create / update
+ * the option related to the line item.
+ *
+ * @param $form Form array
+ * @param $form_state The form state array.
+ * @return void
+ */
+function multiple_option_sets_add_more_submit($form, $form_state){
+
+
+  // Get current product, taking into account different Commerce versions behavior.
+  if (isset($form_state['default_product'])) {
+    $product_id = $form_state['default_product']->product_id;
+  }
+  elseif (isset($form_state['default_product_id'])) {
+    $product_id = $form_state['default_product_id'];
+  }
+  elseif (isset($form_state['products'])) {
+    $current_product = reset($form_state['products']);
+    $product_id = $current_product->product_id;
+  }
+  else {
+    return;
+  }
+
+  $current_product = commerce_product_load($product_id);
+
+  // Iterates the fields of this product. We search for entity reference fields
+  // to a commerce option set.
+  foreach ($current_product as $field_name => $field) {
+    $field_info = field_info_field($field_name);
+
+    if ($field_info['type'] != 'entityreference' || !isset($field_info['settings']['target_type']) || $field_info['settings']['target_type'] != 'commerce_option_set') {
+      continue;
+    }
+
+    $lang_code = field_language('commerce_product', $current_product, $field_name);
+    if (!isset($field[$lang_code])) {
+      continue;
+    }
+
+    foreach ($form_state['values']['field_extra_attributes'] as $delta => $set_id) {
+
+      $option = $form_state['commerce_option'][$field_name][$delta]['option'];
+
+      // Notify field widgets and populate option with values.
+      field_attach_submit('commerce_option', $option, $form[$field_name][$delta], $form_state);
+
+      // Check if our option is empty. If yes we shouldn't save anything.
+      // Cannot use field_get_items() because it calls field_language().
+      $option_extracted = commerce_option_get_valuables($option);
+      $ow = entity_metadata_wrapper('commerce_option', $option);
+      $empty = TRUE;
+
+      foreach (array_keys($option_extracted) as $option_field) {
+        $value = $ow->$option_field->value();
+        if (!empty($value)) {
+          $empty = FALSE;
+          break;
+        }
+      }
+
+      if ($empty) {
+        continue;
+      }
+      global $user;
+      if($delta != 0) {
+        $new_line_item = commerce_product_line_item_new($current_product, $form_state['values']['field_extra_attributes'][$delta]['quantity'], $form_state['line_item']->order_id, $form_state['line_item']->data, $form_state['line_item']->type);
+        $new_line_item = commerce_cart_product_add($user->uid, $new_line_item);
+        //var_dump($form_state['line_item']);
+        //var_dump($new_line_item);
+        //die();
+        $line_item_id = $new_line_item->line_item_id;
+      }
+      else {
+        $line_item_id = $form_state['line_item']->line_item_id;
+      }
+      $product_id = $current_product->product_id;
+      $match = FALSE;
+
+      // Check if the newly created options exist on this line item already.
+      // If yes we needn't save anything, commerce will just increase the
+      // quantity.
+      $query = db_select('commerce_option', 'co')
+        ->fields('co', array('option_id'))
+        ->condition('line_item_id', $line_item_id, '=')
+        ->condition('product_id', $product_id, '=');
+
+      $result = $query->execute()->fetchCol();
+
+      if (!empty($result)) {
+        $commerce_option_entities = commerce_option_load_multiple($result);
+        $option_extracted = serialize($option_extracted);
+
+        foreach ($commerce_option_entities as $commerce_option) {
+          $commerce_option_extracted = commerce_option_get_valuables($commerce_option);
+          $commerce_option_extracted = serialize($commerce_option_extracted);
+          if ($commerce_option_extracted == $option_extracted) {
+            $match = TRUE;
+            break;
+          }
+        }
+      }
+
+      if ($match) {
+        continue;
+      }
+
+      $option->line_item_id = $line_item_id;
+      $option->product_id = $product_id;
+
+      // Save the option.
+      commerce_option_save($option);
+
+    }
+  }
+}
+?>
